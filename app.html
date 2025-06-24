@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detector de Objetos Web</title>
+    
+    <!-- Tailwind CSS para un diseño moderno y responsivo -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- TensorFlow.js - La biblioteca principal de ML -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    
+    <!-- Coco-SSD Model - Un modelo pre-entrenado para detectar objetos comunes -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <style>
+        /* Estilos personalizados para el contenedor y la superposición */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            aspect-ratio: 16 / 9;
+        }
+        #video, #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 0.75rem; /* Esquinas redondeadas */
+        }
+        #video {
+            transform: scaleX(-1); /* Espejo para que se sienta como un reflejo */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl text-center mb-8">
+        <h1 class="text-4xl md:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">Detector de Objetos Web</h1>
+        <p class="text-gray-400 mt-2">Usa la cámara de tu dispositivo para identificar objetos en tiempo real.</p>
+    </div>
+
+    <!-- Contenedor para el video y el canvas -->
+    <div id="container" class="video-container bg-gray-800 rounded-xl shadow-2xl shadow-purple-500/20">
+        <!-- El video mostrará la cámara -->
+        <video id="video" autoplay playsinline muted></video>
+        
+        <!-- El canvas se usará para dibujar las cajas y etiquetas sobre el video -->
+        <canvas id="canvas"></canvas>
+
+        <!-- Mensaje de estado inicial -->
+        <div id="status" class="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-80 rounded-xl">
+            <div class="text-center">
+                <p id="status-text" class="text-xl font-semibold">Cargando modelo...</p>
+                <div class="mt-4 w-24 h-24 border-4 border-dashed rounded-full animate-spin border-blue-400 mx-auto"></div>
+            </div>
+        </div>
+    </div>
+    
+    <button id="startButton" class="mt-8 px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-bold rounded-full shadow-lg hover:scale-105 transform transition-transform duration-300 ease-in-out">
+        Activar Cámara
+    </button>
+
+    <script>
+        // --- Referencias a los elementos del DOM ---
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const statusText = document.getElementById('status-text');
+        const statusContainer = document.getElementById('status');
+        const startButton = document.getElementById('startButton');
+        const ctx = canvas.getContext('2d');
+
+        let model = null;
+        let animationFrameId = null;
+
+        // --- Función principal de la aplicación ---
+        async function runApp() {
+            // 1. Cargar el modelo de detección de objetos Coco-SSD
+            statusText.textContent = "Cargando modelo...";
+            console.log("Cargando modelo...");
+            try {
+                model = await cocoSsd.load();
+                console.log("Modelo cargado exitosamente.");
+                statusText.textContent = "Activa la cámara para empezar.";
+                startButton.style.display = 'block';
+            } catch(err) {
+                console.error("Error al cargar el modelo:", err);
+                statusText.textContent = "Error al cargar el modelo.";
+            }
+        }
+        
+        // --- Inicia la detección al hacer clic en el botón ---
+        startButton.onclick = async () => {
+            if (!model) return;
+            
+            startButton.style.display = 'none';
+            statusText.textContent = "Iniciando cámara...";
+
+            // 2. Obtener acceso a la cámara del usuario
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user' } // 'user' para selfie, 'environment' para trasera
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    // Ajustar el tamaño del canvas al del video
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    statusContainer.style.display = 'none'; // Ocultar el mensaje de estado
+                    // 3. Empezar a detectar objetos
+                    detectObjects();
+                };
+            } catch (err) {
+                console.error("Error al acceder a la cámara: ", err);
+                statusText.textContent = "No se pudo acceder a la cámara.";
+                statusContainer.style.display = 'flex';
+                startButton.style.display = 'block';
+            }
+        };
+
+        // --- Función de detección (se ejecuta en un bucle) ---
+        async function detectObjects() {
+            if (!model || video.paused || video.ended) {
+                // Detener el bucle si el video no está corriendo
+                cancelAnimationFrame(animationFrameId);
+                return;
+            }
+            
+            // 4. Detectar objetos en el fotograma actual del video
+            const predictions = await model.detect(video);
+
+            // 5. Dibujar los resultados en el canvas
+            drawDetections(predictions);
+
+            // 6. Volver a llamar a esta función para el siguiente fotograma
+            animationFrameId = requestAnimationFrame(detectObjects);
+        }
+
+        // --- Función para dibujar las predicciones ---
+        function drawDetections(predictions) {
+            // Limpiar el canvas anterior
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            
+            // Configuración de estilo para las cajas y el texto
+            ctx.font = '16px "Inter", sans-serif';
+            ctx.textBaseline = 'top';
+
+            predictions.forEach(prediction => {
+                // Coordenadas y tamaño de la caja detectada
+                const [x, y, width, height] = prediction.bbox;
+
+                // Como el video está en modo espejo, tenemos que invertir la coordenada X
+                const mirroredX = ctx.canvas.width - x - width;
+                
+                // Dibujar la caja (rectángulo)
+                ctx.strokeStyle = '#4f46e5'; // Un color morado/indigo
+                ctx.lineWidth = 3;
+                ctx.strokeRect(mirroredX, y, width, height);
+
+                // Dibujar el fondo para la etiqueta
+                const text = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillStyle = '#4f46e5';
+                ctx.fillRect(mirroredX, y, textWidth + 8, 24);
+
+                // Dibujar el texto de la etiqueta
+                ctx.fillStyle = '#ffffff'; // Texto blanco
+                ctx.fillText(text, mirroredX + 4, y + 4);
+            });
+        }
+        
+        // Iniciar la aplicación al cargar la página
+        runApp();
+    </script>
+</body>
+</html>
